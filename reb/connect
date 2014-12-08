@@ -1,0 +1,700 @@
+VERSION = "1.0.5"
+
+PACKET_DEBUG = false
+
+if turtle then
+	error ("Do not run this on a turtle, it's meant for computers.")
+end
+
+assert (os.loadAPI("/" .. shell.dir() .. "/libs/commonlib"), "No commonlib!")
+assert (os.loadAPI("/" .. shell.dir() .. "/libs/turtlelib"), "No turtlelib!")
+assert (os.loadAPI("/" .. shell.dir() .. "/libs/inputparserlib"), "No inputparserlib!")
+
+args = {...}
+assert (args[1], "Need turtle name in argument 1!")
+
+turtleName = tostring(args[1])
+
+channel = commonlib.str.hash (turtleName, turtlelib.CHANNEL_MIN, turtlelib.CHANNEL_MAX)
+replyChannel = channel + 1 --commonlib.hashStr (tostring(os.getComputerID()), turtlelib.CHANNEL_REPLY_MIN, turtlelib.CHANNEL_REPLY_MAX)
+
+print ("Turtle control v" .. VERSION)
+
+local modem
+modem = peripheral.wrap(pocket and "back" or "top")
+
+if not modem then
+	error ("Requires wireless modem!")
+end
+
+print ("Opening channel " .. channel)
+
+modemInterface = {
+	sendAndWait = function (packet, typeReply)
+		--modemQueue:clear()
+		modemInterface.send (packet)
+
+
+		local timer = os.startTimer (10)
+		local r, replyPacket
+		repeat
+			local sEvent, param = os.pullEvent( "timer" )
+			r, replyPacket = modemQueue:lookFor (typeReply)
+		until param == timer or r
+
+		if r then
+			data = replyPacket.data or {}
+			return true, data
+		else
+			ui:addTextLine ("No reply to " .. packet.type .. " command!")
+			return false, nil
+		end
+	end,
+
+	sendAndWaitWithResponse = function (packet, typeReply)
+		local result, data = modemInterface.sendAndWait (packet, typeReply)
+		if result then
+			ui:addTextLine ("]" .. data.response)
+		end
+	end,
+
+	send = function (packet)
+		if PACKET_DEBUG then
+			ui:addTextLine ("Sending >" .. packet.type)
+		end
+		modem.transmit (channel, replyChannel, textutils.serialize (packet))
+	end,
+}
+
+print ("Connecting to turtle on channel " .. channel)
+
+local colorOrWhite, colorOrBlack = commonlib.gfx.colorOrWhite, commonlib.gfx.colorOrBlack
+
+-- Monitor state class
+UIClass = {}
+UIClass.__index = UIClass
+
+function UIClass.create()
+	local ui = {}
+	setmetatable (ui, UIClass)
+
+	ui.termW, ui.termH = term.getSize()
+	-- 26x20 for portable
+
+	ui.textLines = { }
+	ui.textOffset = 0
+	ui.maxTextLines = 6
+	ui.heartBeat = false
+	ui.isInput = false
+
+	ui.optionsText = {
+		{ text = "Auto-unload", key = "autoUnload", default = true, choices = {
+			{ text = "Yes", value = true},
+			{ text = "No", value = false} }
+		},
+		{ text = "Refuel slot", key = "refuelFirstOnly", default = true, choices = {
+			{ text = "First", value = true},
+			{ text = "Any", value = false} }
+		},
+		{ text = "Destructive moves", key = "moveDestroy", default = false, choices = {
+			{ text = "No", value = false},
+			{ text = "Yes", value = true} }
+		},
+		{ text = "Refuel amount", key = "refuelAmt", default = 1, choices = {			
+			{ text = "1", value = 1 },
+			{ text = "8", value = 8 },
+			{ text = "16", value = 16 },
+			{ text = "32", value = 32 },
+			{ text = "64", value = 64 } }
+		},		
+		{ text = "Falling blk check", key = "checkForFallingBlocks", default = false, choices = {
+			{ text = "No", value = false},
+			{ text = "Yes", value = true} }
+		},
+	}
+
+	ui.optionSelected = 1
+
+	ui.options = {}
+	for i = 1, #ui.optionsText do
+		local v = ui.optionsText[i]
+		ui.options[v.key] = v.default
+	end
+
+	return ui
+end
+
+-- Create UI management class
+ui = UIClass.create()
+
+function UIClass:selectOption (which)
+	if which == "next" then
+		ui.optionSelected = ui.optionSelected + 1
+		if ui.optionSelected > #ui.optionsText then
+			ui.optionSelected = 1
+		end
+		self:drawOptions()
+	elseif which == "prev" then
+		ui.optionSelected = ui.optionSelected - 1
+		if ui.optionSelected < 1 then
+			ui.optionSelected = #ui.optionsText
+		end
+		self:drawOptions()
+	end
+end
+
+function UIClass:selectChoice (which)
+	-- first, find out what choice we have selected
+	local v = self.optionsText[self.optionSelected]
+	local choices = v.choices
+	local currChoice = 0
+	for i = 1, #choices do
+		local vc = choices[i]
+		if self.options[v.key] == vc.value then
+			currChoice = i
+		end
+	end
+
+	if which == "prev" then
+		currChoice = currChoice - 1
+		if currChoice < 1 then
+			currChoice = #choices
+		end
+	elseif which == "next" then
+		currChoice = currChoice + 1
+		if currChoice > #choices then
+			currChoice = 1
+		end
+	end
+
+	-- now update the actual option
+	self.options[v.key] = choices[currChoice].value
+
+	self:drawOptions()
+end
+
+function UIClass:drawOptions()
+	commonlib.gfx.clearLines (2, 18)
+
+	local otf = colorOrWhite (colors.cyan)
+	local ovf, ovb = colorOrBlack (colors.white), colorOrWhite (colors.cyan)
+
+	for i = 1, #self.optionsText do
+		local v = self.optionsText[i]
+		local y = i * 2 + 2
+		if self.optionSelected == i then
+			commonlib.gfx.cText (1, y, ">", colorOrWhite (colors.yellow))
+		end
+
+		commonlib.gfx.cText (2, y, v.text, otf)
+
+		for ii = 1, #v.choices do
+			local vc = v.choices[ii]
+			if self.options[v.key] == vc.value then
+				commonlib.gfx.cText (20, y, vc.text, ovf, ovb)
+			end
+		end
+	end
+end
+
+function UIClass:drawTop()
+	commonlib.gfx.drawLine (1, 1, self.termW, 1, colors.white)
+	commonlib.gfx.cText (2, 1, "REB remote v" .. VERSION, colorOrBlack (colors.orange), colors.white)
+
+	if self.screen == "status" then
+		local top = self.termH - self.maxTextLines - 1
+		commonlib.gfx.drawLine (1, top, self.termW, top, colorOrWhite (colors.blue))
+
+		if self.isInput then
+			commonlib.gfx.cText (1, top, "Cmd>", colorOrBlack (colors.yellow), colorOrWhite (colors.blue))
+		else
+			--commonlib.gfx.cText (1, top, "Console", colors.yellow, colors.blue)
+		end
+		self:drawTextLines()
+	end
+end
+
+function UIClass:drawBottom()
+	commonlib.gfx.drawLine (1, self.termH, self.termW, self.termH, colors.white)
+	if self.screen == "status" then
+		commonlib.gfx.cText (2, self.termH, "H for HELP, BKSPC to quit", colorOrBlack (colors.gray), colors.white)
+	elseif self.screen == "help" then
+		commonlib.gfx.cText (2, self.termH, "BKSPC to return", colorOrBlack (colors.gray), colors.white)
+	elseif self.screen == "options" then
+		commonlib.gfx.cText (2, self.termH, "UP/DN, L/R change, BKSPC quit", colorOrBlack (colors.gray), colors.white)
+	end
+end
+
+function UIClass:inputMode (isInput)
+	self.isInput = isInput
+	self:drawTop()
+	if isInput then
+		local top = self.termH - self.maxTextLines - 1
+		term.setCursorPos (5, top)
+		term.setBackgroundColor (colorOrWhite (colors.blue))
+		term.setTextColor (colorOrBlack (colors.white))
+	end
+end
+
+function UIClass:toggleHeartbeat()
+	self.heartBeat = not self.heartBeat
+end
+
+function UIClass:saveInputCursor()
+	self.storedX, self.storedY = term.getCursorPos()
+end
+
+function UIClass:restoreInputCursor()
+	term.setCursorPos (self.storedX, self.storedY)
+	term.setBackgroundColor (colorOrWhite (colors.blue))
+	term.setTextColor (colorOrBlack (colors.white))
+end
+
+function UIClass:drawTurtleStatus()
+	if self.screen ~= "status" then
+		return
+	end
+
+	UIClass:saveInputCursor()
+
+	commonlib.gfx.clearLines (2, 11)
+	if turtleGhost:hasInfo() then
+		local info = turtleGhost.info
+		if self.heartBeat then
+			commonlib.gfx.drawHLine (1, 2, 2, colorOrWhite (colors.green))
+		else
+			commonlib.gfx.drawHLine (1, 2, 2, colorOrBlack (colors.lime))
+		end
+		commonlib.gfx.cText (4, 2, "Turtle " .. turtleName, colorOrWhite (colors.green))
+		local fc, fb = colorOrWhite (colors.yellow), colorOrBlack (colors.black)
+		if info.fuel < 50 then
+			fc, fb = colorOrBlack (colors.yellow), colorOrWhite (colors.red)
+		end
+		commonlib.gfx.cText (1, 4, "Fuel " .. info.fuel, fc, fb)
+		--commonlib.gfx.cText (14, 4, "Stored " .. info.invFuelAmt, colors.lime)
+		--commonlib.gfx.cText (1, 5, "Inv #" .. info.invAmt, colors.lightGray)
+		commonlib.gfx.cText (1, 6, "P " .. turtleGhost.x .. ", " .. turtleGhost.y .. ", " .. turtleGhost.z, colorOrWhite (colors.blue))
+		commonlib.gfx.cText (1, 7, "D " .. turtleGhost.dX .. ", " .. turtleGhost.dY .. ", " .. turtleGhost.dZ, colorOrWhite(colors.cyan))
+
+		if info.moveInfo.paused then
+			commonlib.gfx.cText (1, 9, " PAUSED ", colors.black, colorOrWhite (colors.red))
+		else
+			if info.moveInfo.mtasks > 0 then
+				local subTask = ""
+				if info.moveInfo.currTask.task then
+					subTask = "(" .. info.moveInfo.currTask.task .. ")"
+				end
+				commonlib.gfx.cText (1, 9, "Task: " .. subTask .. " " .. info.moveInfo.currTask.moveType, colorOrWhite (colors.orange))
+				if info.moveInfo.currTask.w then
+					commonlib.gfx.cText (1, 10, "Zone: X=" .. info.moveInfo.currTask.w .. " Y=" .. info.moveInfo.currTask.h .. " Z=" .. info.moveInfo.currTask.d, colorOrWhite (colors.pink))
+				end
+				if info.moveInfo.currTask.progress and info.moveInfo.currTask.progress.amount then
+					commonlib.gfx.cText (1, 11, "Progress:", colorOrWhite (colors.cyan))
+					
+					local amt = commonlib.m.clamp (info.moveInfo.currTask.progress.amount, 0, 100)
+					--ui:addTextLine (tostring(info.moveInfo.currTask.progress.amount) .. " " .. amt)
+
+					if term.isColor() then
+						commonlib.gfx.drawHLine (11, 11, 15, colors.red)
+					else
+						commonlib.gfx.cText (11, 11, string.rep ("-", 15))
+					end
+					commonlib.gfx.drawHLine (11, 11, (amt / 100) * 15, colorOrWhite (colors.green))
+				end
+			else
+				commonlib.gfx.cText (1, 9, "Idle", colorOrWhite (colors.brown))
+			end
+		end
+	else
+		commonlib.gfx.drawHLine (1, 2, 2, colorOrBlack (colors.red))
+		commonlib.gfx.cText (4, 2, "Detecting...", colorOrWhite (colors.red))
+	end
+
+	UIClass:restoreInputCursor()
+end
+
+
+function UIClass:drawTextLines()
+	UIClass:saveInputCursor()
+
+	local t = self.termH - self.maxTextLines
+	commonlib.gfx.clearLines (t, t + self.maxTextLines - 1)
+	
+	local l = 1
+	local endPt = #self.textLines - self.textOffset
+	if endPt > self.maxTextLines then
+		l = endPt - self.maxTextLines + 1
+		if l < 1 then
+			l = 1
+		end
+	end
+
+	for i = endPt, l, -1 do
+		local c = i == #self.textLines and colors.yellow or colors.gray
+		commonlib.gfx.cText (1, t + (endPt - i), self.textLines[i], colorOrWhite (c))
+	end
+
+	commonlib.gfx.cText (self.termW - 2, t - 1, "   ", colorOrBlack (colors.yellow), colorOrWhite (colors.blue))
+
+	if l ~= 1 then
+		commonlib.gfx.cText (self.termW, t - 1, "v", colorOrBlack (colors.yellow), colorOrWhite (colors.blue))
+	end
+
+	if self.textOffset > 0 then
+		commonlib.gfx.cText (self.termW - 2, t - 1, "^", colorOrBlack (colors.yellow), colorOrWhite (colors.blue))
+	end		
+
+	--commonlib.gfx.cText (1, 1, self.textOffset .. " " .. endPt .. " " .. l , colorOrBlack (colors.yellow), colorOrWhite (colors.blue))
+
+	UIClass:restoreInputCursor()
+end
+
+function UIClass:scrollLineUp()
+	self.textOffset = self.textOffset - 1
+	if self.textOffset < 0 then
+		self.textOffset = 0
+	end
+	ui:drawTextLines()
+end	
+
+function UIClass:scrollLineDown()
+	self.textOffset = self.textOffset + 1
+	if self.textOffset > #self.textLines - 1 then
+		self.textOffset = #self.textLines - 1
+	end
+	ui:drawTextLines()
+end	
+
+function UIClass:addTextLine (txt)
+	table.insert (self.textLines, txt)
+	if #self.textLines > 1000 then
+		table.remove (self.textLines, 1)
+	end
+	if self.screen == "status" then
+		self:drawTextLines()
+	end
+end
+
+function UIClass:showScreen (which)
+	self.screen = which
+	commonlib.gfx.restoreScreen()
+
+	if which == "status" then
+		self:drawTop()
+		self:drawBottom()
+		self:drawTurtleStatus()
+
+	elseif which == "help" then
+		self:drawTop()
+		self:drawBottom()
+
+		local hc = colorOrWhite (colors.cyan)
+		local tc = colorOrWhite (colors.green)
+
+		commonlib.gfx.cText (1, 2, "Keys:", hc)
+		commonlib.gfx.cText (1, 3, "W,A,D = Move idle turtle", tc)
+		commonlib.gfx.cText (1, 4, "T = Enter command", tc)
+		commonlib.gfx.cText (1, 5, "O = Options", tc)
+		commonlib.gfx.cText (1, 6, "ARROW UP/DOWN = Scroll log", tc)
+
+		commonlib.gfx.cText (1, 7, "Commands:", hc)
+		commonlib.gfx.cText (1, 8, "dig X Y Z = dig out area", tc)
+		commonlib.gfx.cText (1, 9, "build X Y = build area", tc)
+		commonlib.gfx.cText (1, 10, "dig/build zone = use zone", tc)
+		commonlib.gfx.cText (1, 11, "stop = Abort tasks, stop", tc)
+		commonlib.gfx.cText (1, 12, "pause = Pause task", tc)
+		commonlib.gfx.cText (1, 13, "resume = Resume task", tc)
+		commonlib.gfx.cText (1, 14, "refuel = Refuel turtle", tc)
+		commonlib.gfx.cText (1, 15, "unload = Manual unload", tc)
+		commonlib.gfx.cText (1, 16, "home = Send turtle to home", tc)
+		commonlib.gfx.cText (1, 17, "sethome = Set home spot", tc)
+		commonlib.gfx.cText (1, 18, "setzone = Set zone for dig", tc)
+		commonlib.gfx.cText (1, 19, "moveto X Y Z = move home", tc)
+
+	elseif which == "options" then
+		self:drawTop()
+		self:drawBottom()
+		self:drawOptions()
+	end
+end
+
+modem.open (replyChannel)
+
+-- Turtle local representation class
+TurtleGhost = {}
+TurtleGhost.__index = TurtleGhost
+
+function TurtleGhost.create()
+	local t = {}
+	setmetatable (t, TurtleGhost)
+
+	t:clearInfo()
+
+	t.x, t.y, t.z = nil, nil, nil
+	t.dX, t.dY, t.dZ = nil, nil, nil
+
+	return t
+end
+
+function TurtleGhost:setInfo (info)
+	self.info = info
+	if info then
+		self.x, self.y, self.z = self.info.x, self.info.y, self.info.z
+		self.dX, self.dY, self.dZ = self.info.dirX, self.info.dirY, self.info.dirZ
+	end
+	ui:drawTurtleStatus()
+end
+
+function TurtleGhost:clearInfo ()
+	self.info = nil
+end
+
+function TurtleGhost:hasInfo()
+	return self.info ~= nil
+end
+
+function TurtleGhost:isBusy()
+	if self.info == nil then
+		return true
+	else
+		if self.info.moveInfo.paused then
+			return false
+		else
+			return self.info.moveInfo.mtasks > 0
+		end
+	end
+end
+
+function TurtleGhost:dumpInfo()
+	commonlib.print ("Turtle type is " .. self.info.type)
+	commonlib.print ("fuel amt is " .. self.info.fuel)
+	commonlib.print ("total inv amt is " .. self.info.invAmt)
+	commonlib.print ("stored fuel amt is " .. self.info.invFuelAmt)
+	commonlib.print ("inv is full: " .. (self.info.invFull and "true" or "false"))
+	commonlib.print ("relCoords: " .. self.info.x .. ", " .. self.info.y .. ", " .. self.info.z)
+	commonlib.print ("relDir: " .. self.info.dirX .. ", " .. self.info.dirY .. ", " .. self.info.dirZ)
+	if self.info.moveInfo then
+		commonlib.print ("ms=" .. textutils.serialize (self.info.moveInfo))
+	end
+end
+
+
+
+-- Monitor state class
+MonitorState = {}
+MonitorState.__index = MonitorState
+
+function MonitorState.create()
+	local ms = {}
+	setmetatable (ms, MonitorState)
+
+	ms:clear()
+	ms.lastStatusPingTime = 0
+
+	return ms
+end
+
+function MonitorState:clear()
+	self.nextQueue = {}
+	self.state, self.data = "default", {}
+end
+
+function MonitorState:moveToState (newState, data)
+	self.state = newState
+	if data then
+		self.data = data
+	end
+end
+
+function MonitorState:queueNextState (newState, data)
+	if not data then
+		data = {}
+	end
+	table.insert (self.nextQueue, {state=newState, data=data})
+end
+
+function MonitorState:getDebug()
+	return "s=" .. self.state .. " nq=" .. textutils.serialize (self.nextQueue)
+end
+
+function MonitorState:moveToDefault()
+	self:clear()
+end
+
+function MonitorState:checkForNext()
+	if #self.nextQueue > 0 then
+		local nextState = table.remove (self.nextQueue, 1)
+		--commonlib.print ("Queued state now " .. nextState.state)
+		self:moveToState (nextState.state, nextState.data)
+	end
+end	
+
+function MonitorState:increaseLastStatusTime()
+	self.lastStatusPingTime = self.lastStatusPingTime + 0.1
+
+	if self.lastStatusPingTime > 3 then
+		turtleGhost:setInfo (nil)
+		self.lastStatusPingTime = 0
+	end
+end
+
+function MonitorState:clearLastStatusTime()
+	self.lastStatusPingTime = 0
+end
+
+-- global state singletons
+turtleGhost = TurtleGhost.create()
+modemQueue = commonlib.ModemQueue.create()
+monitorState = MonitorState.create()
+
+-- Start up UI
+ui:addTextLine ("Online!")
+ui:showScreen ("status")
+
+-- Turtle monitoring "thread"
+threadMonitorTurtle = function ()
+	while true do
+		sleep (0.1)
+
+		if monitorState.state == "default" then
+			monitorState:increaseLastStatusTime()
+		end
+	end
+end
+
+doPrint = function(txt)
+	ui:addTextLine (txt)
+end
+
+-- Keyboard monitoring "thread"
+threadKeyboard = function ()
+	while true do
+		local sEvent, param = os.pullEvent("key")
+
+		if sEvent == "key" then
+			
+			if ui.screen == "status" and param == inputparserlib.keys.KEY_CMD then
+				if turtleGhost:hasInfo() then
+					ui:inputMode (true)
+
+					if inputparserlib.doCmdInput(param, modemInterface, doPrint, ui.options) then
+						-- nothing
+					end
+
+					ui:inputMode (false)
+				else
+					ui:addTextLine ("Need turtle first!")
+				end
+
+			elseif not turtleGhost:isBusy() and inputparserlib.checkManualKeys(param, modemInterface) then
+				-- nothing
+
+			elseif param == inputparserlib.keys.KEY_ESC then
+				if ui.screen == "status" then
+					return false
+				elseif ui.screen == "help" or ui.screen == "options" then
+					ui:showScreen ("status")
+				end
+
+			elseif param == inputparserlib.keys.KEY_HELP then
+				if ui.screen ~= "help" then
+					ui:showScreen ("help")
+				end				
+
+			elseif param == inputparserlib.keys.KEY_OPTIONS then
+				if ui.screen ~= "options" then
+					ui:showScreen ("options")
+				end				
+
+			elseif param == inputparserlib.keys.KEY_PAGEUP then
+				if ui.screen == "options" then
+					ui:selectOption("prev")
+				else
+					ui:scrollLineUp()
+				end
+
+			elseif param == inputparserlib.keys.KEY_PAGEDOWN then
+				if ui.screen == "options" then
+					ui:selectOption("next")
+				else
+					ui:scrollLineDown()
+				end
+
+			elseif param == inputparserlib.keys.KEY_PAGELEFT then
+				if ui.screen == "options" then
+					ui:selectChoice("prev")
+				end
+
+			elseif param == inputparserlib.keys.KEY_PAGERIGHT then
+				if ui.screen == "options" then
+					ui:selectChoice("next")
+				end
+			end
+		end
+	end
+
+end
+
+-- Modem monitoring "thread"
+threadModem = function ()
+	while true do
+		local event, modemSide, senderChannel, senderReplyChannel, message, 
+			senderDistance = os.pullEvent("modem_message")
+
+		if event == "modem_message" then
+
+			--[[
+			commonlib.print ("modem message, c=" .. senderChannel .. " rc=" .. senderReplyChannel .. 
+				" msg=" .. message)
+
+			]]
+			if senderChannel == replyChannel then
+				local packet = textutils.unserialize (message)
+
+				--commonlib.print (message)
+				if PACKET_DEBUG then
+					ui:addTextLine (packet.data.text)
+				end
+
+				if packet then
+					if packet.type == "pos" then
+						--commonlib.print ("pos=" .. packet.data.x .. "," .. packet.data.y .. "," .. packet.data.z ..
+						--	" dir=" .. packet.data.dX .. "," .. packet.data.dY .. "," .. packet.data.dZ)
+						turtleGhost.x = packet.data.x
+						turtleGhost.y = packet.data.y
+						turtleGhost.z = packet.data.z
+						turtleGhost.dX = packet.data.dX
+						turtleGhost.dY = packet.data.dY
+						turtleGhost.dZ = packet.data.dZ
+						ui:drawTurtleStatus()
+					elseif packet.type == "statusReply" then
+						--commonlib.print ("pos=" .. packet.data.x .. "," .. packet.data.y .. "," .. packet.data.z ..
+						--	" dir=" .. packet.data.dX .. "," .. packet.data.dY .. "," .. packet.data.dZ)
+						ui:toggleHeartbeat()
+						turtleGhost:setInfo (packet.data)
+						ui:drawTurtleStatus()
+						monitorState:clearLastStatusTime()
+					elseif packet.type == "log" then
+						--commonlib.print (packet.data.text)
+						ui:addTextLine ("]" .. packet.data.text)
+					else
+						modemQueue:add (packet)
+					end
+				end
+			end
+		end	
+
+	end
+end
+
+
+-- Start our "threads"
+parallel.waitForAny (threadKeyboard, threadModem, threadMonitorTurtle)
+
+modem.closeAll()
+
+commonlib.gfx.restoreScreen()
+
+print ("Stopped.")
+
+

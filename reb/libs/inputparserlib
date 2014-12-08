@@ -1,0 +1,189 @@
+--[[
+
+Simple input parsing library.  It's shared between the host and the connect
+program so you can interact with the turtle locally if you so desire.
+
+requires: commonlib
+
+]]
+
+
+-- To modify the keybinds, just change this table.  It's shared between host
+-- and connect.
+keys = {
+	KEY_FWD = 17,  -- W
+	KEY_LEFT = 30, -- A
+	KEY_RIGHT = 32, -- D
+	KEY_BACK = 31, -- S
+	KEY_UP = 19, -- R
+	KEY_DOWN = 33, -- F
+	KEY_PAGEUP = 200, -- ARROW UP
+	KEY_PAGEDOWN = 208, -- ARROW DOWN
+	KEY_PAGELEFT = 203, -- ARROW LEFT
+	KEY_PAGERIGHT = 205, -- ARROW RIGHT
+	KEY_DESTRUCTIVE = 32, -- D
+	KEY_DEBUG = 53, -- /
+	KEY_ESC = 14, -- BACKSPACE
+	KEY_QUIT = 16, -- Q
+	KEY_CMD = 20, -- T
+	KEY_HELP = 35, -- H
+	KEY_OPTIONS = 24, -- O
+}
+
+checkManualKeys = function (param, modem)
+	if param == keys.KEY_FWD then
+		modem.send ({ type = "goForward" })
+		return true
+
+	elseif param == keys.KEY_UP then
+		modem.send ({ type = "goUp" })
+		return true
+
+	elseif param == keys.KEY_DOWN then
+		modem.send ({ type = "goDown" })
+		return true
+
+	elseif param == keys.KEY_LEFT then
+		modem.send ({ type = "turnLeft" })
+		return true
+
+	elseif param == keys.KEY_RIGHT then
+		modem.send ({ type = "turnRight" })
+		return true
+	end
+
+	return false
+end
+
+doCmdInput = function(param, modem, printText, options)
+
+	local getOption = function (key, default)
+		if options and options[key] ~= nil then
+			return options[key]
+		else
+			return default
+		end
+	end
+
+	local rawCmd = commonlib.input.getInput()
+	if rawCmd then
+		local cmdData = commonlib.str.tokenizeStr("[-%w.]+", rawCmd) 
+		--commonlib.print (textcommonlib.serialize (cmdData))
+
+		if cmdData[1] == "dig" or cmdData[1] == "build" then
+			local option = tostring (cmdData[2])
+
+			if option == "zone" then
+				if lastStoredZone then
+					if lastStoredZone:length() > 0 then
+						mX = lastStoredZone.x
+						mY = lastStoredZone.y
+						mZ = lastStoredZone.z
+					else
+						printText ("Error, zone too small!")	
+					end
+				else										
+					printText ("Error, no zone defined!")
+				end
+			else
+				mX = tonumber(cmdData[2])
+				mY = tonumber(cmdData[3])
+				mZ = tonumber(cmdData[4])
+			end
+
+			if cmdData[1] == "dig" then
+				if mX then
+					mY = mY or 1
+					mZ = mZ or 1
+					local autoUnload = getOption ("autoUnload", false)
+					local refuelFirstOnly = getOption ("refuelFirstOnly", true)
+					printText ("digging " .. mX .. " by " .. mY .. " by " .. mZ)
+					printText ((autoUnload and "[Unload] " or "") .. (refuelFirstOnly and "[Refuel-First]" or "[Refuel-Any]"))
+					modem.sendAndWaitWithResponse ({ type = "digStart", x=mX, y=mY, z=mZ, options = options }, "digStartReply")
+					return true
+				else
+					printText ("format: [dig X Y Z]")
+					printText ("        [dig zone]")
+					printText ("Note: Y/Z are optional")
+				end
+			elseif cmdData[1] == "build" then
+				if mX then
+					mY = mY or 1
+					mZ = mZ or 1
+					local destroy = getOption ("buildDestroy", true)
+					local refuelFirstOnly = getOption ("refuelFirstOnly", true)
+					printText ("building " .. mX .. " by " .. mY .. " by " .. mZ)
+					printText ((destroy and "[Destroy] " or "") .. (refuelFirstOnly and "[Refuel-First]" or "[Refuel-Any]"))
+					modem.sendAndWaitWithResponse ({ type = "buildStart", x=mX, y=mY, z=mZ, options = options }, "buildStartReply")
+					return true
+				else
+					printText ("format: [build X Y Z]")
+					printText ("        [build zone]")
+					printText ("Note: Y/Z are optional")
+				end
+			end
+		
+		elseif cmdData[1] == "moveto" then
+
+			mX = tonumber(cmdData[2])
+			mY = tonumber(cmdData[3])
+			mZ = tonumber(cmdData[4])
+
+			if mX then
+				mY = mY or 0
+				mZ = mZ or 0
+				modem.sendAndWaitWithResponse ({ type = "moveTo", x=mX, y=mY, z=mZ, options = options }, "moveToReply")
+			else
+				printText ("format: moveto X Y Z")
+				printText ("Note: Y/Z are optional")
+			end
+
+		elseif cmdData[1] == "stop" then														
+			modem.sendAndWaitWithResponse ({type="stop"}, "stopReply")
+
+		elseif cmdData[1] == "refuel" then														
+			modem.sendAndWaitWithResponse ({type="refuel"}, "refuelReply")
+
+		elseif cmdData[1] == "sethome" then							
+			modem.sendAndWaitWithResponse ({type="setHome"}, "setHomeReply")
+
+		elseif cmdData[1] == "home" then
+			modem.sendAndWaitWithResponse ({type="goHome"}, "goHomeReply")
+
+		elseif cmdData[1] == "unload" then
+			modem.sendAndWaitWithResponse ({type="goUnload"}, "goUnloadReply")
+
+		elseif cmdData[1] == "pause" then
+			modem.sendAndWaitWithResponse ({type="pause"}, "pauseReply")
+
+		elseif cmdData[1] == "resume" then
+			modem.sendAndWaitWithResponse ({type="resume"}, "resumeReply")
+			return true
+
+		elseif cmdData[1] == "reboot" then
+			modem.send ({type="reboot"})
+			printText ("Rebooting turtle...")
+			return true
+
+		elseif cmdData[1] == "setzone" then
+			printText ("Setting zone end.")
+			local success, data = modem.sendAndWait ({type="getpos"}, "fixedpos")
+			if success then
+				lastStoredZone = vector.new (
+					(math.abs(data.x) + 1) * commonlib.sign (data.x), 
+					(math.abs(data.y) + 1) * commonlib.sign (data.y), 
+					(math.abs(data.z) + 1) * commonlib.sign (data.z))
+				printText ("Zone area: " .. lastStoredZone.x .. " " .. lastStoredZone.y .. " " .. lastStoredZone.z)
+			end
+			return true
+
+		else
+			printText ("Unknown cmd!")
+			--printText ("valid: stop, dig, refuel, sethome,") 
+			--printText ("home, setzone, unload, pause, resume")
+			return false
+		end
+	end
+
+	return false
+end

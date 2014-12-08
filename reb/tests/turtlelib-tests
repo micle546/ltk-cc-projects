@@ -1,0 +1,73 @@
+local printedLines = 0
+pp = function(t)
+	print (t)
+	printedLines = printedLines + 1
+	if printedLines > 8 then
+		printedLines = 0
+		print ("Press enter!")
+		commonlib.getInput()
+	end
+end
+
+assert (os.loadAPI("/reb/commonlib"), 
+	"No commonlib!")
+
+assert (os.loadAPI("/reb/turtlelib"), 
+	"No turtlelib!")
+
+if turtlelib.VERSION then
+	pp ("turtlelib is " .. 
+		turtlelib.VERSION)
+end
+
+local verT = turtlelib.getOSVersion()
+pp (textutils.serialize (verT))
+
+pp ("Testing debug...")
+local a = { zoo = 4 }
+local b = nil
+b = turtlelib.debug.shallowcopy (a)
+assert (b ~= nil, "B is nil, shouldn't be!")
+assert (a.zoo == b.zoo, "Failed, b is " .. textutils.serialize (b))
+
+local result
+pp ("Testing inv.isSlotHoldingFuel(1)...")
+result = turtlelib.inv.isSlotHoldingFuel (1)
+pp ("result: " .. tostring(result))
+
+pp ("Testing inv.isSlotHoldingFuel(2)...")
+result = turtlelib.inv.isSlotHoldingFuel (2)
+pp ("result: " .. tostring(result))
+
+pp ("Testing inv.isInvFull(true)...")
+result = turtlelib.inv.isInvFull (true)
+pp ("result: " .. tostring(result))
+
+pp ("Testing inv.isInvFull(false)...")
+result = turtlelib.inv.isInvFull (false)
+pp ("result: " .. tostring(result))
+
+pp ("Testing inv.areSlotsFull()...")
+result = turtlelib.inv.areSlotsFull()
+pp ("result: " .. tostring(result))
+
+pp ("Testing inv.getSlotsWithFuel()...")
+result = turtlelib.inv.getSlotsWithFuel()
+pp ("result: " .. textutils.serialize (result))
+
+pp ("Testing inv.getSlotsWithoutFuel()...")
+result = turtlelib.inv.getSlotsWithoutFuel()
+pp ("result: " .. textutils.serialize (result))
+
+pp ("Testing fuel.check(true)...")
+local text
+result, text = turtlelib.fuel.check(true)
+pp ("result: " .. tostring(result) .. " text=" .. text)
+
+
+
+
+
+
+--local data = turtlelib.getInfo()
+--textutils.serialize (data)

@@ -1,0 +1,269 @@
+--[[
+
+This contains common routines used by all REB systems.
+
+Submodules:
+
+math		-- Various handy math shortcuts
+string		-- Various string utilities
+gfx			-- Wrapper for term text "graphics"
+
+]]
+
+VERSION = "1.0.0"
+
+m = {}
+debug = {}
+input = {}
+str = {}
+
+-- returns OS version as a table of numbers
+getOSVersion = function()
+	local ret = {}
+	for num in os.version():gmatch("%d+") do table.insert(ret, tonumber(num)) end
+	return ret
+end
+
+debug.dump = function (table)
+	print (textutils.serialize (table))
+end
+
+debug.shallowcopy = function (orig)
+    local orig_type = type(orig)
+    local copy
+    if orig_type == 'table' then
+        copy = {}
+        for orig_key, orig_value in pairs(orig) do
+    		copy[orig_key] = orig_value
+        end
+    else -- number, string, boolean, etc
+        copy = orig
+    end
+    return copy
+end
+
+m.clamp = function (value, min, max) 
+	return math.min(math.max(value, min), max) 
+end
+
+m.rotBounds = function (angle)
+	while angle < 0 do
+		angle = angle + 360 end
+	while angle > 360 do
+		angle = angle - 360 end
+end
+
+m.rotateAroundX = function(vec, n)
+    local c, s = math.cos(n), math.sin(n)
+    return vector.new(
+      vec.x,
+      vec.y * c + vec.z * s,
+      vec.z * c - vec.y * s
+    ):round()
+    -- Note we have to round, otherwise we get direction vectors with very small inaccuracies
+end
+
+m.rotateAroundY = function(vec, n)
+	local c, s = math.cos(n), math.sin(n)
+	return vector.new(
+	  vec.x * c + vec.z * s,
+	  vec.y,
+	  vec.z * c - vec.x * s
+	):round()
+	-- Note we have to round, otherwise we get direction vectors with very small inaccuracies
+end
+
+m.rotateAroundZ = function(vec, n)
+	local c, s = math.cos(n), math.sin(n)
+	return vector.new(
+	  vec.x * c + vec.y * s,
+	  vec.y * c - vec.x * s,
+	  vec.z
+	):round()
+	-- Note we have to round, otherwise we get direction vectors with very small inaccuracies
+end
+
+m.sign = function(x)
+  return (x<0 and -1) or 1
+end
+
+m.sameVector = function (v1, v2)
+	return v1.x == v2.x and v1.y == v2.y and v1.z == v1.z
+end
+
+-- example: strsplit(",%s*", "Anna, Bob, Charlie,Dolores")
+str.tokenizeStr = function(delimiter, text)
+	local words = {}
+	for word in text:gmatch(delimiter) do table.insert(words, word) end
+	return words
+end
+
+str.hash = function (str, lower, upper)
+	lower = type(lower) == "number" and lower or 0
+	upper = type(upper) == "number" and upper or 65535
+	local hash = 0
+	local range = math.abs (upper - lower)
+
+	for i = 1, str:len() do
+		hash = hash + bit.bxor (str:byte (i), hash)
+		if hash > range then
+			hash = hash - range
+		end
+	end
+
+	return hash + lower
+end
+
+input.getInput = function ()
+	os.queueEvent("dummy") -- to keep stray key events from entering read queue
+	os.pullEvent()
+	return read()
+end
+
+-- ModemQueue class
+ModemQueue = {}
+ModemQueue.__index = ModemQueue
+
+function ModemQueue.create()
+	local q = {}
+	setmetatable (q, ModemQueue)
+
+	q:clear()
+
+	return q
+end
+
+-- Looks for a message of a particular type, if found removes
+function ModemQueue:lookFor (type)
+	if #self.queue == 0 then
+		return false
+	end
+
+	for i = 1, #self.queue do
+		local msg = self.queue[i]
+		--commonlib.print(textutils.serialize (msg))
+		if msg.type == type then
+			table.remove (self.queue, i)
+			return true, msg
+		end
+	end
+end
+
+function ModemQueue:add (packet)
+	table.insert (self.queue, packet)
+end
+
+function ModemQueue:pop ()
+	if #self.queue > 0 then
+		return table.remove (self.queue, 1)
+	else
+		return nil
+	end
+end
+
+function ModemQueue:clear()
+	self.queue = {}
+end
+
+function ModemQueue:flushPacketType(packetType)
+	if #self.queue == 0 then
+		return
+	end
+
+	--print ("t=" .. #self.queue)
+	for i = 1, #self.queue do
+		local msg = self.queue[i]
+		--print (i .. " .. " ..  textutils.serialize (msg))
+		if msg.type == packetType then
+			table.remove (self.queue, i)
+		end
+	end			
+end
+
+
+
+
+gfx = {
+	drawHLine = function (x, y, w, c, char)
+		if w == 0 then
+			return
+		end
+		char = type(char) == "string" and char or " "
+		term.setBackgroundColor (c)
+		for i = 1, w do
+			term.setCursorPos (x + (i - 1), y)
+			term.write (char)
+		end
+	end,
+
+	drawVLine = function (x, y, h, c)
+		if h == 0 then
+			return
+		end
+		char = type(char) == "string" and char or " "
+		gfx.setBackgroundColor (c, char)
+		for i = 1, h do
+			term.setCursorPos (x, y + (i - 1))
+			term.write (char)
+		end
+	end,
+
+	drawLine = function (x, y, x2, y2, c)
+		if not c then
+			c = colors.white
+		end
+		if x == x2 then -- drawing vertical line
+			gfx.drawVLine (x, y, math.abs(y2 - y + 1), c)
+		elseif y == y2 then -- drawing horizontal line
+			gfx.drawHLine (x, y, math.abs (x2 - x + 1), c)
+		else
+			error ("Cannot draw arbitrary lines at moment!")
+		end
+
+	end,
+
+	cText = function (x, y, str, fc, bc)
+		if not fc then
+			fc = colors.white
+		end
+		if not bc then
+			bc = colors.black
+		end
+
+		term.setCursorPos (x, y)
+		term.setTextColor (fc)
+		term.setBackgroundColor (bc)
+		term.write (str)
+	end,
+
+	setDefaultColors = function()
+		term.setTextColor (colors.white)
+		term.setBackgroundColor (colors.black)
+	end,
+
+	clearLines = function (y, y2, c)
+		if not c then
+			term.setBackgroundColor (colors.black)
+		else
+			term.setBackgroundColor (c)
+		end
+		for i = y, y2 do
+			term.setCursorPos (1, i)
+			term.clearLine()
+		end
+	end,
+
+	restoreScreen = function ()
+		gfx.setDefaultColors()
+		term.setCursorPos (1, 1)
+		term.clear()
+	end,
+
+	colorOrWhite = function (color)
+		return term.isColor() and color or colors.white
+	end,
+
+	colorOrBlack = function (color)
+		return term.isColor() and color or colors.black
+	end
+}
