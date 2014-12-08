@@ -1,0 +1,76 @@
+1.0.0
+
+* [DONE] Fix auto-unload not working on movement
+* [DONE] Add pause command
+* [DONE] Add resume command
+* [DONE] Pause on no fuel
+* [DONE] Optimize inventory check, skip if first empty slot found
+* [DONE] Unload all slots, including fuel, but skip slot #1
+* [DONE] Added new build system for syncing to all computers.
+* [DONE] Optimize digging by...
+	* [DONE] Digging underneath the turtle if zone depth > 1
+	* [DONE] Skipping down two planes instead of just one
+* [DONE] Manual control method for turtle, when at turtle
+	* [DONE] Isolate input code into seperate library
+	* [DONE] Add fake packet sender/receiver on turtle so uses same interface
+
+1.0.1
+
+* [DONE] Bug, does not properly dig upwards if given negative z zone
+* [DONE] Bug, does not dig upwards properly on initial start, so can skip a block
+* [DONE] Add build mode
+	* [DONE] Reuse move logic from digging code
+	* [DONE] Added subtask to movetask, for example, now can be "dig" or "build"
+	* [DONE] Fill mode: Place tile underneath us.
+		* Replace mode:  If tile detected underneath us, dig it and replace it.
+* [DONE] Bug: Fill mode doesn't always place a block, leaves holes when filling.
+* [DONE] Add auto-channel assignment based on turtle name
+
+1.0.2
+
+* [DONE] Rework remote to have more nicer looking UI
+	* [DONE] Display status readout of turtle, including pos, dir, inv space, fuel level
+	* [DONE] Display movetask status, including current dim of task, type of task, current progress
+	* [DONE] Scrolling display at bottom, with command output information
+	* [DONE] Command entry spot for entering commands
+	* [DONE] Add settings screen for turtle tasks
+		* [DONE] Unload on completion
+		* [DONE] Fuel from first slot only
+		* [DONE] Destroy on build
+* [DONE] Ability scroll the log in control
+* [DONE] Modified low fuel warning so it only prints once to console.
+* [DONE] Auto-unload when done, based on setting
+* [DONE] Refuel from any slot, based on setting
+* [DONE] Destroy on build, based on setting
+* [DONE] Multiple connections cause desync
+
+1.0.3
+
+* [DONE] Move command = enter coords to move up, then auto-set home
+* [DONE] Auto-unload should affect in-progress unloads instead of just final going home
+* [DONE] On job completion, list area in console
+* [DONE] Option: Refuel X instead of just one 1
+* [DONE] Test: Verify that if fuel=any, it won't dump any fuel items from inv on unload
+* [DONE] Package control program options over in unified manner for packets
+* [DONE] Add reboot command to remote reboot the turtle
+* [DONE] Refuel command only checks first slot
+
+1.0.4
+
+* [DONE] If detected block on top (ie: sand), and intended to dig upwards, then keep digging
+	* [DONE] Make this an option, as it slows down the turtle
+* [DONE] Reverse the Z coordinate so that -z is down, and +z is up
+* [DONE] Investigate further, cannot move up or down, move failed: Block below.
+* [DONE] Control crash if you enter area with any axis is -1
+
+1.0.5
+
+* [DONE] Add ability to go from top-to-bottom or bottom-to-top, in prep for multi-planar building
+	* [DONE] Reworked movement code so it has a movement direction, pre-calced at start
+	* [DONE] Reworked dig detection logic so it will only dig when in right spot
+* [DONE] Test: Verify that the progress bars are working.
+
+Future:
+
+* Expand help screen so it's multi-page, with arrow key navigation
+* Bug: Console help wraps over status bar if on regular computer.

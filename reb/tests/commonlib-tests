@@ -1,0 +1,23 @@
+
+pp = print
+
+assert (os.loadAPI("/reb/commonlib"), 
+	"No commonlib!")
+
+if commonlib.VERSION then
+	pp ("commonlib is " .. 
+		commonlib.VERSION)
+end
+
+local testStrs = { "Badger", "Badger2", "B4dger", "Bob", "Xerxes", "Blargh"}
+
+for i = 1, #testStrs do
+	local str = testStrs[i]
+	local hash = commonlib.hashStr (str)
+	local lower, upper
+	local hash = commonlib.hashStr (str, lower, upper)
+	print ("S=" .. str .. " hash=" .. hash)
+	lower, upper = 1000, 2000
+	hash = commonlib.hashStr (str, lower, upper)
+	print ("S=" .. str .. " hash=" .. hash .. " " ..lower .. "," .. upper)
+end

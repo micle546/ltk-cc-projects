@@ -1,0 +1,1053 @@
+-- This is runs on the turtle and acts
+-- as a remote-control device.
+
+VERSION = "1.0.5"
+
+-- ** START OF CONFIG
+
+INV_CHECK_FREQUENCY = 10
+MOVE_DELAY = 0.2
+PACKET_DEBUG = false
+TASK_DEBUG = false
+DEBUG_EXTRA = false 
+
+-- ** END OF CONFIG
+
+print("turtle host v" .. VERSION .. " by LtKillPuppy")
+
+assert (os.loadAPI("/" .. shell.dir() .. "/libs/commonlib"), "No commonlib!")
+assert (os.loadAPI("/" .. shell.dir() .. "/libs/turtlelib"), "No turtlelib!")
+assert (os.loadAPI("/" .. shell.dir() .. "/libs/inputparserlib"), "No inputparserlib!")
+
+
+if turtlelib.VERSION then
+	print ("turtlelib is " .. 
+		turtlelib.VERSION)
+end
+
+
+args = {...}
+
+local turtleName = os.getComputerLabel()
+assert (turtleName, "You must run this on a named turtle!")
+
+channel = commonlib.str.hash (turtleName, turtlelib.CHANNEL_MIN, turtlelib.CHANNEL_MAX)
+replyChannel = channel + 1
+
+turtle.select (1)
+print ("Listening to channel " .. channel)
+
+if not turtle then
+	error ("Turtle required!")
+end
+
+print ("Running.  BACKSPACE to stop.")
+
+local manualMoveDestructive = true
+
+local modem = peripheral.wrap("right")
+
+for k, v in pairs( rs.getSides() ) do
+  print( k .. " : " .. ( peripheral.isPresent( v ) and peripheral.getType( v )  or "no peripheral" ) )
+end
+
+if not modem then
+	error ("Requires wireless turtle.")
+end
+
+modem.open (channel)
+
+-- No actual modem...  This is local, so fake it!
+modemFakeInterface = {
+	sendAndWait = function (packet, typeReply)
+		--modemQueue:clear()
+		modemFakeInterface.send (packet)
+
+		local timer = os.startTimer (10)
+			local r, replyPacket
+			repeat
+			local sEvent, param = os.pullEvent( "timer" )
+			r, replyPacket = modemQueue:lookFor (typeReply)
+			until param == timer or r
+		
+		if r then
+			data = replyPacket.data or {}
+			return true, data
+		else
+			print ("No reply to " .. packet.type .. " command!")
+			return false, nil
+		end
+	end,
+
+	sendAndWaitWithResponse = function (packet, typeReply)
+		local result, data = modemFakeInterface.sendAndWait (packet, typeReply)
+		if result then
+			print (data.response)
+		end
+	end,
+
+	send = function (packet)
+		if DEBUG_PACKETS then
+			print ("Sending >" .. packet.type)
+		end
+		--modem.transmit (channel, replyChannel, textutils.serialize (packet))
+		os.queueEvent ("modem_message", "local", channel, 1, textutils.serialize (packet), 0)
+	end,	
+}
+
+commonlib.modemReply = function (packet, isLocal)
+	if PACKET_DEBUG then
+		print ("Send >" .. packet.type .. (isLocal and "(L)" or ""))
+	end
+
+	if not isLocal then
+		modem.transmit (replyChannel, channel, textutils.serialize (packet))
+	else
+		os.queueEvent ("modem_message", "local", channel, 1, textutils.serialize (packet), 0)
+	end
+end
+
+commonlib.sendPos = function(isLocal, fixed)
+	local ptype = (fixed == nil) and false or fixed
+	ptype = ptype and "fixedpos" or "pos"
+	commonlib.modemReply ({type=ptype, data={
+		x=turtlelib.movement.pos.x,
+		y=turtlelib.movement.pos.y,
+		z=turtlelib.movement.pos.z,
+		dX=turtlelib.movement.dir.x,
+		dY=turtlelib.movement.dir.y,
+		dZ=turtlelib.movement.dir.z
+		}}, isLocal)
+end
+
+commonlib.log = function (logtext)
+	commonlib.modemReply ({type="log", data={text=logtext}})
+	print (logtext)
+end
+
+
+TurtleClass = {}
+TurtleClass.__index = TurtleClass
+
+function TurtleClass.create()
+	local t = {}
+	setmetatable (t, TurtleClass)
+
+	t.moveSystem = MovementClass.create()
+	t:updateInfo()
+
+	return t
+end
+
+function TurtleClass:updateInfo()
+	self.info = turtlelib.getInfo()
+	local ms = self.moveSystem
+	local ti = {}
+	if #ms.moveQueue > 0 then
+		ti = ms.moveQueue[1]
+	end
+	local moveInfo = {paused=ms.paused, mtasks=#ms.moveQueue, currTask=ti}
+	self.info.moveInfo = moveInfo
+end
+
+function TurtleClass:isInvFull()
+	--return self.info.invFull
+
+	return turtlelib.inv.areSlotsFull()
+end
+
+
+MovementClass = {}
+MovementClass.__index = MovementClass
+
+function MovementClass.create()
+	local ms = {}
+	setmetatable (ms, MovementClass)
+	ms:stop()
+	ms:setHome()
+
+	ms.moveQueue = {}
+	ms.paused = false
+
+	ms.options = {
+		autoUnload = true,
+		refuelFirstOnly = true,
+		moveDestroy = false,
+		refuelAmt = 1,
+		checkForFallingBlocks = false,
+		startAtTop = true,
+	}
+
+	ms.moveRetryCount = 0
+
+	return ms
+end
+
+function MovementClass:isBusy()
+	return #self.moveQueue > 0
+end
+
+function MovementClass:setHome()
+	if self:isBusy() then
+		commonlib.log ("Cannot set home, turtle is busy!")
+	else
+		turtlelib.movement.clear()
+	end
+end
+
+function MovementClass:stop()
+	self.moveQueue = {}	
+	self.paused = false
+end
+
+function MovementClass:pause()
+	if TASK_DEBUG then
+		commonlib.log ("mtasks paused.")
+	end
+	self.paused = true
+end
+
+function MovementClass:resume()
+	if TASK_DEBUG then
+		commonlib.log ("mtasks resumed.")
+	end
+	self.lowFuelWarned = nil
+	self.paused = false
+end
+
+function MovementClass:popMovement()	
+	if #self.moveQueue > 0 then
+		local t = table.remove (self.moveQueue, 1)
+		if TASK_DEBUG then
+			commonlib.log ("Removing mtask " .. t.moveType)
+		end
+	end
+
+	if #self.moveQueue == 0 then
+		if TASK_DEBUG then
+			commonlib.log ("No more mtasks queued.")
+		end
+	end
+end
+
+function MovementClass:popAndPushMovement(params)
+	self:popMovement()
+	self:pushMovement (params)
+end
+
+function MovementClass:setOptions (newOptions)
+	if not newOptions then
+		return
+	end
+
+	for k, v in pairs (newOptions) do
+		print ("Setting option " .. k .. " to " .. tostring(v))
+		self.options[k] = v
+	end
+end
+
+function MovementClass:pushMovement(params)
+ --moveSystem:start({type="rect", w=packet.x, h=packet.y, d=packet.z})
+ 	-- re-sample our internal state
+ 	turtleSystem:updateInfo()
+ 	
+ 	local moveData = {}
+
+ 	self:setOptions (params.options)
+ 	--print ("options=" .. textutils.serialize (self.options))
+
+	if params.type == "rect" then
+		moveData.moveType = "rect"
+		moveData.mX, moveData.mY, moveData.targetZ = params.w, params.h, params.d
+		moveData.w, moveData.h, moveData.d = params.w, params.h, params.d
+		--print ("params=" .. textutils.serialize (params))
+
+		moveData.spiralList = nil
+
+		moveData.spiralAlt = false
+		moveData.invCheckCount = INV_CHECK_FREQUENCY + 100
+
+		moveData.task = params.task
+
+		if moveData.task == "dig" then
+			-- auto-select startAtTop since we're just digging
+			self.options.startAtTop = params.d < 0
+		elseif moveData.task == "build" then
+			-- for building, always start at bottom
+			self.options.startAtTop = false
+			-- don't auto-unload cuz that's just annoying
+			self.options.autoUnload = false
+		end
+
+		if moveData.targetZ > 0 then
+			if self.options.startAtTop then
+				moveData.currZ = moveData.targetZ - 1
+				moveData.targetZ = 0
+				moveData.moveDir = -1
+			else
+				moveData.currZ = 0
+				moveData.targetZ = moveData.targetZ - 1
+				moveData.moveDir = 1
+			end
+		else
+			if self.options.startAtTop then
+				moveData.currZ = 0
+				moveData.targetZ = moveData.targetZ + 1
+				moveData.moveDir = -1
+			else
+				moveData.currZ = moveData.targetZ + 1
+				moveData.targetZ = 0
+				moveData.moveDir = 1
+			end
+		end
+
+		if moveData.task == "build" then			
+			moveData.invSlot = turtlelib.inv.getNextOccupiedItemSlot (2)
+			print ("Utilizing inv slot " .. moveData.invSlot)
+
+			commonlib.log ("Adding building task!")
+		else
+			commonlib.log ("Adding digging task!")
+		end
+
+	elseif params.type == "home" then
+		moveData.moveType = "homing"
+		moveData.task = "home"
+		moveData.doUnload = params.doUnload
+		commonlib.log ("Adding homing task!")
+
+	elseif params.type == "move" then
+		moveData.moveType = "moveto"
+		turtlelib.movement.clear() -- Clear reference frame, so we're always moving relative to turtle home
+		moveData.targetPos = vector.new (params.x, params.y, params.z)
+		commonlib.log ("Adding move task!")
+	end
+
+
+	moveData.progress = { 
+		amount = 0, 
+		startPos = vector.new (turtlelib.movement.pos.x, turtlelib.movement.pos.y, turtlelib.movement.pos.z)
+	}
+
+	if TASK_DEBUG then
+		commonlib.log ("Adding mtask " .. moveData.moveType)
+	end
+
+	self.lowFuelWarned = nil
+	table.insert (self.moveQueue, 1, moveData)
+end
+
+function MovementClass:canRetry(reasonForFail)
+	self.moveRetryCount = self.moveRetryCount + 1
+	if self.moveRetryCount > 100 then
+		commonlib.log ("move failed: " .. reasonForFail)
+		self:pause()
+	end
+end
+
+function MovementClass:safeTurnLeft()
+	if not turtlelib.movement.turnLeft() then
+		self:canRetry ("cannot turn left")
+	else
+		self.moveRetryCount = 0
+	end
+end
+
+function MovementClass:safeTurnRight()
+	if not turtlelib.movement.turnRight() then
+		self:canRetry ("cannot turn right")
+	else
+		self.moveRetryCount = 0
+	end
+end
+
+function MovementClass:safeMoveForward(digForward, digDown, digUp, onDig)
+	result, text = turtlelib.movement.moveForward(digForward, onDig)
+	if not result then
+		self:canRetry (text)
+	else
+		self.moveRetryCount = 0
+		if digDown and turtle.detectDown() then
+			if not turtle.digDown() then
+				if onDig then onDig() end
+			end
+		end
+		if digUp and turtle.detectUp() then
+			if not turtle.digUp() then
+				if onDig then onDig() end
+			end
+		end
+	end
+end
+
+function MovementClass:safeMoveDown(digDown, onDig)
+	result, text = turtlelib.movement.moveDown(digDown, onDig)
+	if not result then
+		self:canRetry (text)
+	else
+		self.moveRetryCount = 0
+	end
+end
+
+function MovementClass:safeMoveUp(digUp, onDig)
+	result, text = turtlelib.movement.moveUp(digUp, onDig)
+	if not result then
+		self:canRetry (text)
+	else
+		self.moveRetryCount = 0
+		return true
+	end
+end
+
+function MovementClass:safeDigUp(onDig)
+	if turtle.detectUp() then
+		if not turtle.digUp() then
+			if onDig then onDig() end
+		end
+	end
+end
+
+function MovementClass:safeDigDown(onDig)
+	if turtle.detectDown() then
+		if not turtle.digDown() then
+			if onDig then onDig() end
+		end
+	end
+end
+
+function MovementClass:turnTo (newDir)
+	--self:safeTurnLeft()
+
+	if commonlib.m.sameVector (turtlelib.movement.dir, newDir) then
+		return true
+	end
+
+	local aD = math.deg (math.atan2 (turtlelib.movement.dir.y, turtlelib.movement.dir.x))
+	local aS = math.deg (math.atan2 (newDir.y, newDir.x))
+
+	local turnLeft = ((aS - aD + 360) % 360 > 180)
+
+	--print ('turnLeft=' .. (turnLeft and "true" or "false"))
+
+	if turnLeft then self:safeTurnLeft() else self:safeTurnRight() end
+
+	return false
+end
+
+function MovementClass:moveToPoint(point, rotAtHome, digForward, digDown, digUp, onDig)
+	rotAtHome = (rotAtHome == nil) and false or rotAtHome
+
+	local offset = point:sub (turtlelib.movement.pos)
+
+	local dist = offset:length()
+	local facingHome = turtlelib.movement.dir:sub (vector.new (1, 0, 0)):length() == 0
+
+	if dist == 0 and (facingHome or not rotAtHome) then
+		return true
+	end
+
+	--[[
+	print ("p=" .. tostring(turtlelib.movement.pos) .. " d=" .. tostring(turtlelib.movement.dir) ..
+		" fh=" .. (facingHome and "true" or "false") .. " o=" .. tostring(offset))
+	]]
+
+	-- move towards home, first on z axis
+	if offset.z ~= 0 then
+		if offset.z < 0 then
+			self:safeMoveDown(true, onDig)
+		else
+			self:safeMoveUp(true, onDig)
+		end
+	else
+		-- now move on the y axis
+		if offset.y ~= 0 then
+			-- if we need to move left (relative), then turn
+			if offset.y > 0 then
+				local seekDir = vector.new (0, 1, 0)
+				if self:turnTo (seekDir) then
+					self:safeMoveForward(digForward, digDown, digUp, onDig)
+				end
+			else
+				-- if we need to move right (relative), then turn
+				local seekDir = vector.new (0, -1, 0)
+				if self:turnTo (seekDir) then
+					self:safeMoveForward(digForward, digDown, digUp, onDig)
+				end
+			end
+		else
+			-- now make sure x axis is good
+			if offset.x ~= 0 then
+				-- if we need to move forward (relative), then turn
+				if offset.x > 0 then
+					local seekDir = vector.new (1, 0, 0)
+					if self:turnTo (seekDir) then
+						self:safeMoveForward(digForward, digDown, digUp, onDig)
+					end
+				else
+					-- if we need to move back (relative), then turn
+					local seekDir = vector.new (-1, 0, 0)
+					if self:turnTo (seekDir) then
+						self:safeMoveForward(digForward, digDown, digUp, onDig)
+					end
+				end
+			end
+		end
+	end
+
+	-- finally, make sure we've turned the right way
+	if offset:length() == 0 then
+		local seekDir = vector.new (1, 0, 0)
+		self:turnTo (seekDir)
+	end
+
+	return false
+end
+
+function MovementClass:doHomeUpdate(moveData)
+	local spL = moveData.progress.startPos:length()
+	if spL > 0 then
+		moveData.progress.amount = (1.0 - (turtlelib.movement.pos:length() / spL)) * 100
+	else
+		moveData.progress.amount = 100
+	end
+
+	if self:moveToPoint (vector.new (0, 0, 0)) then
+		if moveData.doUnload then
+			local seekDir = vector.new (-1, 0, 0)
+			if self:turnTo (seekDir) then
+				turtlelib.inv.dropAll(self.options.refuelFirstOnly, not self.options.refuelFirstOnly)
+				commonlib.log ("Emptied inventory.")
+				moveData.doUnload = false
+			end
+		else
+			local seekDir = vector.new (1, 0, 0)
+			if self:turnTo (seekDir) then
+				commonlib.log ("Returned home!")
+				moveData.progress.amount = 100
+				self:popMovement()
+			end
+		end
+	end
+end
+
+function MovementClass:doMoveToUpdate(moveData)
+	local rpL = moveData.targetPos:length()
+	if rpL > 0 then
+		moveData.progress.amount = (turtlelib.movement.pos:length() / rpL) * 100
+	else
+		moveData.progress.amount = 100
+	end
+
+	doDig = self.options.moveDestroy
+
+	if self:moveToPoint (moveData.targetPos, false, doDig, doDig) then
+		local seekDir = vector.new (1, 0, 0)
+		if self:turnTo (seekDir) then
+			commonlib.log ("Moved to new home!")
+			moveData.progress.amount = 100
+			turtlelib.movement.clear()		
+			self:popMovement()
+		end
+	end
+end
+
+
+function MovementClass:goUnload()
+	if #self.moveQueue > 0 then
+		local moveData = self.moveQueue[1]
+		if moveData.moveType == "rect" then
+			moveData.lastPos = vector.new (
+				turtlelib.movement.pos.x,
+				turtlelib.movement.pos.y,
+				turtlelib.movement.pos.z )
+			if DEBUG_EXTRA then
+				commonlib.log ("resPos=" .. tostring (moveData.lastPos))
+			end
+		end
+	end
+	self:pushMovement ({type="home", doUnload=true})
+end	
+
+function MovementClass:error (msg)
+	commonlib.log (msg .. "@" .. tostring(turtlelib.movement.pos))
+	self:pause()
+end
+
+function MovementClass:selectBuildSlot(moveData)
+	if moveData.invSlot > 0 then
+		turtle.select (moveData.invSlot)
+	end
+	if moveData.invSlot == -1 or turtle.getItemCount (moveData.invSlot) == 0 then
+		moveData.invSlot = turtlelib.inv.getNextOccupiedItemSlot (moveData.invSlot)
+		if moveData.invSlot == -1 then
+			return false
+		else
+			commonlib.log ("Now using slot " .. moveData.invSlot .. ".")
+			turtle.select (moveData.invSlot)
+		end
+	end
+
+	return true
+end
+
+function MovementClass:doRectUpdate(moveData)
+	if moveData.lastPos then
+		--print ("Returning to " .. tostring(moveData.lastPos))
+		if self:moveToPoint (moveData.lastPos) then
+			commonlib.log ("Returned to last point.")
+			moveData.lastPos = nil
+		end
+
+		return
+	end
+
+	-- Ever 10 steps, check for inventory space
+	local dugBlock = false
+	onDig = function()
+		dugBlock = true
+	end
+
+	if not moveData.spiralList then
+		moveData.spiralList = {}
+		
+		-- Always make sure we have a zero point in there at start
+		table.insert (moveData.spiralList, vector.new (0, 0, moveData.currZ))
+
+		-- calculate plane movements (in spiral, generate list of waypoints)
+
+		local X, Y = math.abs(moveData.mX), math.abs(moveData.mY)
+		local signX, signY = commonlib.m.sign (moveData.mX), commonlib.m.sign (moveData.mY)
+		local x, y = 0, 0 -- always start or end at 0,0
+
+		local dx, dy = 1, 0
+
+		dx, dy = 1, 0
+
+		local maxI = X * Y
+
+		local turn = function (c, r, w, h)
+			local same = 1
+			if r > h - 1 - r then
+				r = h - 1 - r
+				same = 0
+			end
+			if c > w - 1 - c then
+				c = w - 1 - c
+				same = 0
+			end
+			--r = r - same
+			if (same and (c ~= w - 1 - c)) then
+				r = r - same
+			end
+			return r == c
+		end
+
+		for i = 1, maxI do
+			if turn (x, y, X, Y) then      
+				local t = dx
+				dx = -dy
+				dy = t
+				table.insert (moveData.spiralList, vector.new (x * signX, y * signY, moveData.currZ))
+				--print (i .. " -         " .. x .. ", " .. y .. "         " .. dx .. " " .. dy)
+			end
+
+			x = x + dx
+			y = y + dy
+		end		
+
+		print ("Num spiral movements calculated = " .. #moveData.spiralList)
+		moveData.maxSpiralCount = #moveData.spiralList
+
+		-- if on alt layer, then reverse order of moves so spiral is counter-clockwise
+		-- this improves fuel usage as the turtle doesn't have to track back to 0,0
+		if moveData.spiralAlt then
+			local t = {}
+			for i = #moveData.spiralList, 1, -1 do
+				local s = moveData.spiralList[i]
+				table.insert (t, s)				
+			end
+			moveData.spiralList = t
+
+		end
+
+		moveData.spiralAlt = not moveData.spiralAlt
+
+		--[[
+		for i = 1, #moveData.spiralList do
+			local s = moveData.spiralList[i]
+			print ("Moving to " .. s.x .. ", " .. s.y)
+		end	
+		]]	
+
+	else
+		-- now start moving towards waypoints
+		if #moveData.spiralList == 0 then
+			local amt = moveData.moveDir
+			if moveData.task == "dig" and math.abs (moveData.targetZ - moveData.currZ) > 1 then
+				amt = amt * 2
+			end
+			--print ("moveDir=" .. moveData.moveDir .. " cz=" .. moveData.currZ .. " amt=" .. amt .. " tz=" .. moveData.targetZ)
+			moveData.currZ = moveData.currZ + amt
+
+			local atEnd = false
+			if moveData.moveDir == 1 then atEnd = moveData.currZ > moveData.targetZ else atEnd = moveData.currZ < moveData.targetZ end
+			--print ("atEnd=" .. tostring(atEnd))
+
+			if not atEnd then
+				commonlib.log ("Plane " .. math.abs (moveData.currZ) .. " complete.")
+				-- set to nil to recaculate next plane
+				moveData.spiralList = nil
+			else
+				commonlib.log ("Zone complete!")
+				commonlib.log ("Area is " .. moveData.w .. " "  .. moveData.h .. " " .. moveData.d)
+				if moveData.task == "dig" then
+					self:popAndPushMovement ({type="home", doUnload=self.options.autoUnload})
+					return
+				else
+					self:popMovement()
+					return
+				end
+			end
+		else
+			local vec = moveData.spiralList[1]
+			local doDigForward, doDigDown, doDigUp = false, false, false
+
+			if moveData.task == "dig" then
+				--commonlib.log ("z=" .. (math.abs (moveData.targetZ) - math.abs(moveData.currZ)) .. " mz=" .. moveData.targetZ .. " pz=" .. moveData.currZ)
+				--print ("mZ=" .. moveData.targetZ .. " pZ=" .. moveData.currZ)
+				doDigForward = true
+
+				if vec.z == turtlelib.movement.pos.z then
+					if math.abs (moveData.targetZ - moveData.currZ) > 1 then
+						if moveData.moveDir > 0 then
+							doDigUp = true
+						else
+							doDigDown = true
+						end
+					end
+
+				end				
+				
+
+				--print ("Doing down=" .. tostring (doDigDown) .. " up=" .. tostring (doDigUp))
+
+				if moveData.task == "dig" then
+					if doDigDown then self:safeDigDown(onDig) end
+					if doDigUp then 
+						self:safeDigUp(onDig) 
+						if self.options.checkForFallingBlocks then
+							local redigTries = 20
+							sleep (0.7)
+							while turtle.detectUp() and redigTries > 0 do
+								redigTries = redigTries - 1
+								self:safeDigUp(onDig)
+								sleep (0.5)
+							end
+						end
+					end
+				end
+
+			elseif moveData.task == "build" then
+
+				if self.options.moveDestroy then
+					doDigForward, doDigDown, doDigUp = true, true, true
+					self:safeDigDown(onDig)
+				end
+
+				if not turtle.detectDown() then
+					if not self:selectBuildSlot (moveData) then
+						self:error ("No more placeable blocks!")
+						return
+					end
+
+					if turtle.placeDown() then
+						--print ("Placed block at " .. tostring (turtlelib.movement.pos))
+					else
+						-- retry
+						local tries = 1
+						repeat
+							self:selectBuildSlot (moveData)
+							turtle.placeDown()
+							tries = tries + 1
+							sleep (0.5)
+						until tries > 10 or turtle.detectDown()
+					end
+				end
+			end
+
+			-- Now, just move
+			--print ("Moving to " .. tostring (vec))
+			if self:moveToPoint (vec, false, doDigForward, doDigDown, doDigUp, onDig) then
+				table.remove (moveData.spiralList, 1)
+			end
+		end
+	end
+
+	-- do completion estimation
+	local planes = math.abs (moveData.targetZ - moveData.progress.startPos.z)
+	local segment = (1 / math.abs (planes + 1))
+	local amt = (planes - math.abs(moveData.targetZ - moveData.currZ)) * segment
+	local samt = amt
+
+	if moveData.spiralList then
+		amt = amt + ((1.0 - (#moveData.spiralList / moveData.maxSpiralCount)) * segment)
+	end
+
+	--print ("tp=" .. planes .. " seg=" .. segment .. " amt=" .. samt .. " amt2=" .. amt)
+
+	moveData.progress.amount = amt * 100
+
+	if dugBlock and self.options.autoUnload then
+		moveData.invCheckCount = moveData.invCheckCount + 1
+		--print ("block dug, amt = " .. moveData.invCheckCount)
+		if moveData.invCheckCount > INV_CHECK_FREQUENCY then
+			if turtleSystem:isInvFull() then
+				commonlib.log ("Inventory full, unloading!")
+				self:goUnload()
+			end
+			moveData.invCheckCount = 0 
+		end
+	end
+end
+
+
+function MovementClass:update()
+
+	if #self.moveQueue > 0 and not self.paused then
+		local moveData = self.moveQueue[1]
+
+		-- Check for out of fuel
+		local fuelstate, fuelText = turtlelib.fuel.check(self.options.refuelFirstOnly, self.options.refuelAmt)
+		if fuelstate == "fueled" then
+			commonlib.log (fuelText)
+			self.lowFuelWarned = nil
+		elseif fuelstate == "error" then
+			commonlib.log (fuelText)
+			self:pause()
+		elseif fuelstate == "warning" then
+			if not self.lowFuelWarned then
+				commonlib.log (fuelText)
+				self.lowFuelWarned = true
+			end
+		end		
+
+		-- do actual moving
+		if moveData.moveType == "rect" then
+			self:doRectUpdate(moveData)
+		elseif moveData.moveType == "homing" then
+			self:doHomeUpdate(moveData)
+		elseif moveData.moveType == "moveto" then
+			self:doMoveToUpdate(moveData)
+		end
+	end
+
+end
+
+-- create global representations of our state
+turtleSystem = TurtleClass.create() 
+modemQueue = commonlib.ModemQueue.create()
+
+
+threadMovement = function ()
+	-- manipulates moveSystem
+	while true do
+		sleep (MOVE_DELAY)
+
+		turtleSystem.moveSystem:update()
+	end
+end
+
+doPrint = function (txt)
+	print (txt)
+end
+
+threadKeyboard = function ()
+	while true do
+		local sEvent, param = os.pullEvent("key")
+
+		if sEvent == "key" then
+			if param == inputparserlib.keys.KEY_CMD then
+				term.write ("Cmd>")
+
+				inputparserlib.doCmdInput(param, modemFakeInterface, doPrint)
+
+			elseif not turtleSystem.moveSystem:isBusy() and inputparserlib.checkManualKeys(param, modemFakeInterface) then
+				-- nothing
+
+			elseif param == inputparserlib.keys.KEY_ESC then
+				return false
+			end
+		end
+	end
+end
+
+threadModem = function ()
+	while true do
+		local event, modemSide, senderChannel, senderReplyChannel, message, 
+			senderDistance = os.pullEvent("modem_message")
+
+		if event == "modem_message" then
+			
+			--print ("msg=" .. message)
+			if senderChannel == channel then
+				local sourceIsLocal = modemSide == "local"
+				local packet = textutils.unserialize (message)
+
+				if PACKET_DEBUG then print ("recv <" .. packet.type .. (sourceIsLocal and "(L)" or "")) end
+
+				packet.isLocal = sourceIsLocal
+				packet.senderReplyChannel = senderReplyChannel
+				modemQueue:add (packet)
+
+				if packet.type == "pos" then
+					print ("pos=" .. packet.data.x .. "," .. packet.data.y .. "," .. packet.data.z ..
+						" dir=" .. packet.data.dX .. "," .. packet.data.dY .. "," .. packet.data.dZ)
+				end
+			end
+		end
+	end
+end
+
+local updateTime, updateTimeFreq = 0, 0.5
+
+threadProcessModemQueue = function ()
+	while true do
+		sleep (0.1)
+
+		local packet = modemQueue:pop()
+
+		updateTime = updateTime + 0.1
+
+		if updateTime > updateTimeFreq then
+			updateTime = 0
+			turtleSystem:updateInfo()
+			commonlib.modemReply ({ type="statusReply", data=turtleSystem.info})
+		end
+
+		if packet then
+			local sourceIsLocal = packet.isLocal
+
+			if not turtleSystem.moveSystem:isBusy() then
+				if packet.type == "goForward" then
+					local f, r = turtlelib.movement.moveForward(manualMoveDestructive)
+					if not f then
+						commonlib.modemReply ({ type="moveFailed", data={reason=r }}, sourceIsLocal)
+					end
+
+				elseif packet.type == "turnLeft" then					
+					if not turtlelib.movement.turnLeft() then
+						commonlib.modemReply ({ type="turnFailed", data={dir="left" }}, sourceIsLocal)
+					end
+
+				elseif packet.type == "turnRight" then
+					if not turtlelib.movement.turnRight() then
+						commonlib.modemReply ({ type="turnFailed", data={dir="right" }}, sourceIsLocal)
+					end
+
+				elseif packet.type == "goUp" then
+					local f, r = turtlelib.movement.moveUp(manualMoveDestructive)
+					if not f then
+						commonlib.modemReply ({ type="moveFailed", data={reason=r}}, sourceIsLocal)
+					end
+
+				elseif packet.type == "goDown" then
+					local f, r = turtlelib.movement.moveDown(manualMoveDestructive)
+					if not f then
+						commonlib.modemReply ({ type="moveFailed", data={reason=r}}, sourceIsLocal)
+					end
+				end
+			end
+
+			-- commands
+			if packet.type == "setHome" then
+				if not turtleSystem.moveSystem:isBusy() then
+					turtleSystem.moveSystem:setHome()
+					commonlib.modemReply ({ type="setHomeReply", data={response="Home is set."}, channel=senderReplyChannel}, sourceIsLocal)
+					--commonlib.sendPos()
+				else
+					commonlib.modemReply ({ type="setHomeReply", data={response="Turtle is busy!"}, channel=senderReplyChannel}, sourceIsLocal)
+				end
+
+			elseif packet.type == "refuel" then
+				local f, r = turtlelib.fuel.check(false, 1)
+				commonlib.modemReply ({ type="refuelReply", data={response=r}, channel=senderReplyChannel}, sourceIsLocal)
+
+			elseif packet.type == "goHome" then
+				if not turtleSystem.moveSystem:isBusy() then
+					commonlib.modemReply ({ type="goHomeReply", data={response="Going home..."}, channel=senderReplyChannel}, sourceIsLocal)
+					sleep (2.0)
+					turtleSystem.moveSystem:pushMovement({type="home", options=packet.options})
+				else
+					commonlib.modemReply ({ type="goHomeReply", data={response="Turtle is busy!"}, channel=senderReplyChannel}, sourceIsLocal)
+				end
+
+			elseif packet.type == "goUnload" then
+				commonlib.modemReply ({ type="goUnloadReply", data={response="Going to unload..."}, channel=senderReplyChannel}, sourceIsLocal)
+				sleep (2.0)
+				turtleSystem.moveSystem:goUnload()
+
+			elseif packet.type == "digStart" then
+				if turtleSystem.moveSystem:isBusy() then
+					commonlib.modemReply ({ type="digStartReply", data={response="Turtle is busy!"}, channel=senderReplyChannel}, sourceIsLocal)
+				else
+					commonlib.modemReply ({ type="digStartReply", data={response="Digging started!"}, channel=senderReplyChannel}, sourceIsLocal)
+					sleep (2.0)
+					turtleSystem.moveSystem:pushMovement({type="rect", options=packet.options, w=packet.x, h=packet.y, d=packet.z, task="dig"})
+				end
+
+			elseif packet.type == "buildStart" then
+				if turtleSystem.moveSystem:isBusy() then
+					commonlib.modemReply ({ type="buildStartReply", data={response="Turtle is busy!"}, channel=senderReplyChannel}, sourceIsLocal)
+				else
+					commonlib.modemReply ({ type="buildStartReply", data={response="Building started!"}, channel=senderReplyChannel}, sourceIsLocal)
+					sleep (2.0)
+					turtleSystem.moveSystem:pushMovement({type="rect", options=packet.options, w=packet.x, h=packet.y, d=packet.z, task="build" })
+				end
+
+			elseif packet.type == "moveTo" then
+				if turtleSystem.moveSystem:isBusy() then
+					commonlib.modemReply ({ type="moveToReply", data={response="Turtle is busy!"}, channel=senderReplyChannel}, sourceIsLocal)
+				else
+					commonlib.modemReply ({ type="moveToReply", data={response="Moving to " .. packet.x .. ", " .. packet.y .. ", " .. packet.z}, channel=senderReplyChannel}, sourceIsLocal)
+					sleep (2.0)
+					turtleSystem.moveSystem:pushMovement({type="move", options=packet.options, x=packet.x, y=packet.y, z=packet.z })
+				end
+				
+			elseif packet.type == "stop" then
+				if turtleSystem.moveSystem:isBusy() then
+					turtleSystem.moveSystem:stop()
+					commonlib.modemReply ({ type="stopReply", data={response="Turtle has stopped."}, channel=senderReplyChannel}, sourceIsLocal)
+				else
+					commonlib.modemReply ({ type="stopReply", data={response="Turtle isn't busy."}, channel=senderReplyChannel}, sourceIsLocal)
+				end
+				
+			elseif packet.type == "pause" then
+				turtleSystem.moveSystem:pause()
+				commonlib.modemReply ({ type="pauseReply", data={response="Turtle has paused."}, channel=senderReplyChannel}, sourceIsLocal)
+
+			elseif packet.type == "resume" then
+				turtleSystem.moveSystem:resume()
+				commonlib.modemReply ({ type="resumeReply", data={response="Turtle has resumed."}, channel=senderReplyChannel}, sourceIsLocal)
+				
+			elseif packet.type == "getpos" then
+				--print ("Received status request, replying...")
+				commonlib.sendPos(sourceIsLocal, true)
+
+			elseif packet.type == "reboot" then
+				print ("Reboot request received.")
+				os.reboot()
+				return
+			end
+		end
+	end
+end
+
+
+-- Start our "threads"
+parallel.waitForAny (threadKeyboard, threadMovement, threadModem, threadProcessModemQueue)
+
+modem.closeAll()
+
+print ("Stopped.")
+
+
