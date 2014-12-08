@@ -29,11 +29,14 @@ end
 
 print ("Opening channel " .. channel)
 
+--[[
+	Used by inputparserlib to do remote packet communication with the turtle.
+	This API is used so that a local replacement can be swapped in for different
+	methods.
+]]
 modemInterface = {
 	sendAndWait = function (packet, typeReply)
-		--modemQueue:clear()
 		modemInterface.send (packet)
-
 
 		local timer = os.startTimer (10)
 		local r, replyPacket
@@ -70,7 +73,7 @@ print ("Connecting to turtle on channel " .. channel)
 
 local colorOrWhite, colorOrBlack = commonlib.gfx.colorOrWhite, commonlib.gfx.colorOrBlack
 
--- Monitor state class
+-- UI class for handling all UI stuff
 UIClass = {}
 UIClass.__index = UIClass
 
@@ -124,7 +127,7 @@ function UIClass.create()
 	return ui
 end
 
--- Create UI management class
+-- Create the UI management class
 ui = UIClass.create()
 
 function UIClass:selectOption (which)
@@ -420,7 +423,7 @@ end
 
 modem.open (replyChannel)
 
--- Turtle local representation class
+-- Class to represent a ghost image of the turtle we are controlling
 TurtleGhost = {}
 TurtleGhost.__index = TurtleGhost
 
@@ -478,9 +481,7 @@ function TurtleGhost:dumpInfo()
 	end
 end
 
-
-
--- Monitor state class
+-- Monitor class which will keep the turtle ghost instance in sync to remote turtle
 MonitorState = {}
 MonitorState.__index = MonitorState
 

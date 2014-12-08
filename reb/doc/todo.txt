@@ -68,16 +68,9 @@
 * [DONE] Add ability to go from top-to-bottom or bottom-to-top, in prep for multi-planar building
 	* [DONE] Reworked movement code so it has a movement direction, pre-calced at start
 	* [DONE] Reworked dig detection logic so it will only dig when in right spot
-<<<<<<< HEAD
 * [DONE] Test: Verify that the progress bars are working.
-=======
-* Test: Verify that the progress bars are working.
->>>>>>> 17d41f21317b071ec89f7777b76fb501f9490deb
 
 Future:
 
 * Expand help screen so it's multi-page, with arrow key navigation
-<<<<<<< HEAD
 * Bug: Console help wraps over status bar if on regular computer.
-=======
->>>>>>> 17d41f21317b071ec89f7777b76fb501f9490deb

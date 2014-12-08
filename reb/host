@@ -19,12 +19,9 @@ assert (os.loadAPI("/" .. shell.dir() .. "/libs/commonlib"), "No commonlib!")
 assert (os.loadAPI("/" .. shell.dir() .. "/libs/turtlelib"), "No turtlelib!")
 assert (os.loadAPI("/" .. shell.dir() .. "/libs/inputparserlib"), "No inputparserlib!")
 
-
 if turtlelib.VERSION then
-	print ("turtlelib is " .. 
-		turtlelib.VERSION)
+	print ("turtlelib is " .. turtlelib.VERSION)
 end
-
 
 args = {...}
 
@@ -43,13 +40,13 @@ end
 
 print ("Running.  BACKSPACE to stop.")
 
-local manualMoveDestructive = true
-
 local modem = peripheral.wrap("right")
 
+--[[
 for k, v in pairs( rs.getSides() ) do
   print( k .. " : " .. ( peripheral.isPresent( v ) and peripheral.getType( v )  or "no peripheral" ) )
 end
+]]
 
 if not modem then
 	error ("Requires wireless turtle.")
@@ -57,7 +54,11 @@ end
 
 modem.open (channel)
 
--- No actual modem...  This is local, so fake it!
+--[[
+	Used by inputparserlib to do local packet communications to this turtle, by
+	faking a modem.  This lets us use the same routines to talk to the turtle
+	and not care we're doing so locally or over a modem.
+]]
 modemFakeInterface = {
 	sendAndWait = function (packet, typeReply)
 		--modemQueue:clear()
@@ -90,12 +91,13 @@ modemFakeInterface = {
 		if DEBUG_PACKETS then
 			print ("Sending >" .. packet.type)
 		end
-		--modem.transmit (channel, replyChannel, textutils.serialize (packet))
 		os.queueEvent ("modem_message", "local", channel, 1, textutils.serialize (packet), 0)
 	end,	
 }
 
-commonlib.modemReply = function (packet, isLocal)
+-- This either replies via the modem, or using event insertion, to close the fake/real
+-- modem loop.
+modemReply = function (packet, isLocal)
 	if PACKET_DEBUG then
 		print ("Send >" .. packet.type .. (isLocal and "(L)" or ""))
 	end
@@ -110,7 +112,7 @@ end
 commonlib.sendPos = function(isLocal, fixed)
 	local ptype = (fixed == nil) and false or fixed
 	ptype = ptype and "fixedpos" or "pos"
-	commonlib.modemReply ({type=ptype, data={
+	modemReply ({type=ptype, data={
 		x=turtlelib.movement.pos.x,
 		y=turtlelib.movement.pos.y,
 		z=turtlelib.movement.pos.z,
@@ -121,11 +123,11 @@ commonlib.sendPos = function(isLocal, fixed)
 end
 
 commonlib.log = function (logtext)
-	commonlib.modemReply ({type="log", data={text=logtext}})
+	modemReply ({type="log", data={text=logtext}})
 	print (logtext)
 end
 
-
+-- Create a turtle control management class
 TurtleClass = {}
 TurtleClass.__index = TurtleClass
 
@@ -151,12 +153,10 @@ function TurtleClass:updateInfo()
 end
 
 function TurtleClass:isInvFull()
-	--return self.info.invFull
-
 	return turtlelib.inv.areSlotsFull()
 end
 
-
+-- Create a class to manage the turtle's movements
 MovementClass = {}
 MovementClass.__index = MovementClass
 
@@ -247,7 +247,6 @@ function MovementClass:setOptions (newOptions)
 end
 
 function MovementClass:pushMovement(params)
- --moveSystem:start({type="rect", w=packet.x, h=packet.y, d=packet.z})
  	-- re-sample our internal state
  	turtleSystem:updateInfo()
  	
@@ -416,8 +415,6 @@ function MovementClass:safeDigDown(onDig)
 end
 
 function MovementClass:turnTo (newDir)
-	--self:safeTurnLeft()
-
 	if commonlib.m.sameVector (turtlelib.movement.dir, newDir) then
 		return true
 	end
@@ -727,7 +724,6 @@ function MovementClass:doRectUpdate(moveData)
 					end
 
 				end				
-				
 
 				--print ("Doing down=" .. tostring (doDigDown) .. " up=" .. tostring (doDigUp))
 
@@ -776,7 +772,6 @@ function MovementClass:doRectUpdate(moveData)
 			end
 
 			-- Now, just move
-			--print ("Moving to " .. tostring (vec))
 			if self:moveToPoint (vec, false, doDigForward, doDigDown, doDigUp, onDig) then
 				table.remove (moveData.spiralList, 1)
 			end
@@ -847,7 +842,7 @@ end
 turtleSystem = TurtleClass.create() 
 modemQueue = commonlib.ModemQueue.create()
 
-
+-- This thread runs the movement system on the turtle
 threadMovement = function ()
 	-- manipulates moveSystem
 	while true do
@@ -857,10 +852,12 @@ threadMovement = function ()
 	end
 end
 
+-- Just print to local term
 doPrint = function (txt)
 	print (txt)
 end
 
+-- This thread manages the keyboard input
 threadKeyboard = function ()
 	while true do
 		local sEvent, param = os.pullEvent("key")
@@ -881,6 +878,7 @@ threadKeyboard = function ()
 	end
 end
 
+-- This thread manages the modem and adds packets to the modem queue
 threadModem = function ()
 	while true do
 		local event, modemSide, senderChannel, senderReplyChannel, message, 
@@ -910,6 +908,8 @@ end
 
 local updateTime, updateTimeFreq = 0, 0.5
 
+-- This thread manages the modem queue and dispatches commands as needed.
+-- Note: Must be seperate so the local loopback system via fakeModem works.
 threadProcessModemQueue = function ()
 	while true do
 		sleep (0.1)
@@ -921,7 +921,7 @@ threadProcessModemQueue = function ()
 		if updateTime > updateTimeFreq then
 			updateTime = 0
 			turtleSystem:updateInfo()
-			commonlib.modemReply ({ type="statusReply", data=turtleSystem.info})
+			modemReply ({ type="statusReply", data=turtleSystem.info})
 		end
 
 		if packet then
@@ -929,31 +929,31 @@ threadProcessModemQueue = function ()
 
 			if not turtleSystem.moveSystem:isBusy() then
 				if packet.type == "goForward" then
-					local f, r = turtlelib.movement.moveForward(manualMoveDestructive)
+					local f, r = turtlelib.movement.moveForward(true)
 					if not f then
-						commonlib.modemReply ({ type="moveFailed", data={reason=r }}, sourceIsLocal)
+						modemReply ({ type="moveFailed", data={reason=r }}, sourceIsLocal)
 					end
 
 				elseif packet.type == "turnLeft" then					
 					if not turtlelib.movement.turnLeft() then
-						commonlib.modemReply ({ type="turnFailed", data={dir="left" }}, sourceIsLocal)
+						modemReply ({ type="turnFailed", data={dir="left" }}, sourceIsLocal)
 					end
 
 				elseif packet.type == "turnRight" then
 					if not turtlelib.movement.turnRight() then
-						commonlib.modemReply ({ type="turnFailed", data={dir="right" }}, sourceIsLocal)
+						modemReply ({ type="turnFailed", data={dir="right" }}, sourceIsLocal)
 					end
 
 				elseif packet.type == "goUp" then
-					local f, r = turtlelib.movement.moveUp(manualMoveDestructive)
+					local f, r = turtlelib.movement.moveUp(true)
 					if not f then
-						commonlib.modemReply ({ type="moveFailed", data={reason=r}}, sourceIsLocal)
+						modemReply ({ type="moveFailed", data={reason=r}}, sourceIsLocal)
 					end
 
 				elseif packet.type == "goDown" then
-					local f, r = turtlelib.movement.moveDown(manualMoveDestructive)
+					local f, r = turtlelib.movement.moveDown(true)
 					if not f then
-						commonlib.modemReply ({ type="moveFailed", data={reason=r}}, sourceIsLocal)
+						modemReply ({ type="moveFailed", data={reason=r}}, sourceIsLocal)
 					end
 				end
 			end
@@ -962,53 +962,53 @@ threadProcessModemQueue = function ()
 			if packet.type == "setHome" then
 				if not turtleSystem.moveSystem:isBusy() then
 					turtleSystem.moveSystem:setHome()
-					commonlib.modemReply ({ type="setHomeReply", data={response="Home is set."}, channel=senderReplyChannel}, sourceIsLocal)
+					modemReply ({ type="setHomeReply", data={response="Home is set."}, channel=senderReplyChannel}, sourceIsLocal)
 					--commonlib.sendPos()
 				else
-					commonlib.modemReply ({ type="setHomeReply", data={response="Turtle is busy!"}, channel=senderReplyChannel}, sourceIsLocal)
+					modemReply ({ type="setHomeReply", data={response="Turtle is busy!"}, channel=senderReplyChannel}, sourceIsLocal)
 				end
 
 			elseif packet.type == "refuel" then
 				local f, r = turtlelib.fuel.check(false, 1)
-				commonlib.modemReply ({ type="refuelReply", data={response=r}, channel=senderReplyChannel}, sourceIsLocal)
+				modemReply ({ type="refuelReply", data={response=r}, channel=senderReplyChannel}, sourceIsLocal)
 
 			elseif packet.type == "goHome" then
 				if not turtleSystem.moveSystem:isBusy() then
-					commonlib.modemReply ({ type="goHomeReply", data={response="Going home..."}, channel=senderReplyChannel}, sourceIsLocal)
+					modemReply ({ type="goHomeReply", data={response="Going home..."}, channel=senderReplyChannel}, sourceIsLocal)
 					sleep (2.0)
 					turtleSystem.moveSystem:pushMovement({type="home", options=packet.options})
 				else
-					commonlib.modemReply ({ type="goHomeReply", data={response="Turtle is busy!"}, channel=senderReplyChannel}, sourceIsLocal)
+					modemReply ({ type="goHomeReply", data={response="Turtle is busy!"}, channel=senderReplyChannel}, sourceIsLocal)
 				end
 
 			elseif packet.type == "goUnload" then
-				commonlib.modemReply ({ type="goUnloadReply", data={response="Going to unload..."}, channel=senderReplyChannel}, sourceIsLocal)
+				modemReply ({ type="goUnloadReply", data={response="Going to unload..."}, channel=senderReplyChannel}, sourceIsLocal)
 				sleep (2.0)
 				turtleSystem.moveSystem:goUnload()
 
 			elseif packet.type == "digStart" then
 				if turtleSystem.moveSystem:isBusy() then
-					commonlib.modemReply ({ type="digStartReply", data={response="Turtle is busy!"}, channel=senderReplyChannel}, sourceIsLocal)
+					modemReply ({ type="digStartReply", data={response="Turtle is busy!"}, channel=senderReplyChannel}, sourceIsLocal)
 				else
-					commonlib.modemReply ({ type="digStartReply", data={response="Digging started!"}, channel=senderReplyChannel}, sourceIsLocal)
+					modemReply ({ type="digStartReply", data={response="Digging started!"}, channel=senderReplyChannel}, sourceIsLocal)
 					sleep (2.0)
 					turtleSystem.moveSystem:pushMovement({type="rect", options=packet.options, w=packet.x, h=packet.y, d=packet.z, task="dig"})
 				end
 
 			elseif packet.type == "buildStart" then
 				if turtleSystem.moveSystem:isBusy() then
-					commonlib.modemReply ({ type="buildStartReply", data={response="Turtle is busy!"}, channel=senderReplyChannel}, sourceIsLocal)
+					modemReply ({ type="buildStartReply", data={response="Turtle is busy!"}, channel=senderReplyChannel}, sourceIsLocal)
 				else
-					commonlib.modemReply ({ type="buildStartReply", data={response="Building started!"}, channel=senderReplyChannel}, sourceIsLocal)
+					modemReply ({ type="buildStartReply", data={response="Building started!"}, channel=senderReplyChannel}, sourceIsLocal)
 					sleep (2.0)
 					turtleSystem.moveSystem:pushMovement({type="rect", options=packet.options, w=packet.x, h=packet.y, d=packet.z, task="build" })
 				end
 
 			elseif packet.type == "moveTo" then
 				if turtleSystem.moveSystem:isBusy() then
-					commonlib.modemReply ({ type="moveToReply", data={response="Turtle is busy!"}, channel=senderReplyChannel}, sourceIsLocal)
+					modemReply ({ type="moveToReply", data={response="Turtle is busy!"}, channel=senderReplyChannel}, sourceIsLocal)
 				else
-					commonlib.modemReply ({ type="moveToReply", data={response="Moving to " .. packet.x .. ", " .. packet.y .. ", " .. packet.z}, channel=senderReplyChannel}, sourceIsLocal)
+					modemReply ({ type="moveToReply", data={response="Moving to " .. packet.x .. ", " .. packet.y .. ", " .. packet.z}, channel=senderReplyChannel}, sourceIsLocal)
 					sleep (2.0)
 					turtleSystem.moveSystem:pushMovement({type="move", options=packet.options, x=packet.x, y=packet.y, z=packet.z })
 				end
@@ -1016,18 +1016,18 @@ threadProcessModemQueue = function ()
 			elseif packet.type == "stop" then
 				if turtleSystem.moveSystem:isBusy() then
 					turtleSystem.moveSystem:stop()
-					commonlib.modemReply ({ type="stopReply", data={response="Turtle has stopped."}, channel=senderReplyChannel}, sourceIsLocal)
+					modemReply ({ type="stopReply", data={response="Turtle has stopped."}, channel=senderReplyChannel}, sourceIsLocal)
 				else
-					commonlib.modemReply ({ type="stopReply", data={response="Turtle isn't busy."}, channel=senderReplyChannel}, sourceIsLocal)
+					modemReply ({ type="stopReply", data={response="Turtle isn't busy."}, channel=senderReplyChannel}, sourceIsLocal)
 				end
 				
 			elseif packet.type == "pause" then
 				turtleSystem.moveSystem:pause()
-				commonlib.modemReply ({ type="pauseReply", data={response="Turtle has paused."}, channel=senderReplyChannel}, sourceIsLocal)
+				modemReply ({ type="pauseReply", data={response="Turtle has paused."}, channel=senderReplyChannel}, sourceIsLocal)
 
 			elseif packet.type == "resume" then
 				turtleSystem.moveSystem:resume()
-				commonlib.modemReply ({ type="resumeReply", data={response="Turtle has resumed."}, channel=senderReplyChannel}, sourceIsLocal)
+				modemReply ({ type="resumeReply", data={response="Turtle has resumed."}, channel=senderReplyChannel}, sourceIsLocal)
 				
 			elseif packet.type == "getpos" then
 				--print ("Received status request, replying...")
