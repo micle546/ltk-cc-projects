@@ -31,12 +31,13 @@ assert (turtleName, "You must run this on a named turtle!")
 channel = commonlib.str.hash (turtleName, turtlelib.CHANNEL_MIN, turtlelib.CHANNEL_MAX)
 replyChannel = channel + 1
 
-turtle.select (1)
 print ("Listening to channel " .. channel)
 
 if not turtle then
 	error ("Turtle required!")
 end
+
+turtle.select (1)
 
 print ("Running.  BACKSPACE to stop.")
 
