@@ -22,7 +22,7 @@
 	* [DONE] Reuse move logic from digging code
 	* [DONE] Added subtask to movetask, for example, now can be "dig" or "build"
 	* [DONE] Fill mode: Place tile underneath us.
-		* Replace mode:  If tile detected underneath us, dig it and replace it.
+		* [DONE] Replace mode:  If tile detected underneath us, dig it and replace it.
 * [DONE] Bug: Fill mode doesn't always place a block, leaves holes when filling.
 * [DONE] Add auto-channel assignment based on turtle name
 
@@ -78,3 +78,6 @@ Future:
 
 * Expand help screen so it's multi-page, with arrow key navigation
 * Bug: Console help wraps over status bar if on regular computer.
+* Add ability to enter your own zone.
+* Save options in remote to a file, so will be remembered.
+* Bug: Build with destructive mode will repeatedly dig/place block at spiral transitions.
